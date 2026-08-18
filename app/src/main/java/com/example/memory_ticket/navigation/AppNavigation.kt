@@ -10,11 +10,13 @@ import com.example.memory_ticket.ui.screens.auth.LoginScreen
 import com.example.memory_ticket.ui.screens.auth.RegisterScreen
 import com.example.memory_ticket.ui.screens.home.HomeScreen
 import com.example.memory_ticket.viewmodel.AuthViewModel
-
+import com.example.memory_ticket.ui.screens.create.CreateMemoryScreen
 private object Routes {
     const val LOGIN = "login"
     const val REGISTER = "register"
     const val HOME = "home"
+
+    const val CREATE_MEMORY = "create_memory"
 }
 
 @Composable
@@ -83,7 +85,21 @@ fun AppNavigation() {
                     }
                 },
                 onAddMemory = {
-                    // We'll connect this next
+                    navController.navigate(Routes.CREATE_MEMORY)
+                }
+            )
+        }
+
+        composable(Routes.CREATE_MEMORY) {
+            CreateMemoryScreen(
+                onBack = {
+                    navController.popBackStack()
+                },
+                onTakePhoto = {
+                    // CameraX will be connected next
+                },
+                onChooseFromGallery = {
+                    // Gallery will be connected next
                 }
             )
         }
