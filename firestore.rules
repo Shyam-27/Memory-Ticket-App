@@ -1,0 +1,186 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // This security rules file assumes the following data structures:
+    //
+    // Collection: users
+    // Document ID: {userId} (matches Firebase Auth UID)
+    // Fields:
+    //   - name: string (required, 1..100 chars) - User's display name
+    //   - email: string (required, valid email pattern, <= 150 chars) - User's email address
+    //   - createdAt: timestamp | number (required, immutable) - Creation time
+    //
+    // Collection: memories
+    // Document ID: {memoryId} (UUID string matching memoryId field)
+    // Fields:
+    //   - memoryId: string (required, immutable, 1..128 chars) - Memory unique identifier
+    //   - userId: string (required, immutable, 1..128 chars) - Creator UID (matches request.auth.uid)
+    //   - title: string (required, 1..100 chars) - Title of the memory
+    //   - category: string (required, 1..50 chars) - Category tag (e.g., Vacation, Travel)
+    //   - description: string (required, 0..2000 chars) - Memory story or notes
+    //   - imageUrl: string (required, 1..1000 chars) - Image URL (HTTP/HTTPS/GS)
+    //   - ticketStyle: string (required, 1..50 chars) - Style of ticket template
+    //   - createdAt: number | timestamp (required, immutable) - Creation timestamp in millis or server timestamp
+    //   - latitude: number (optional) - Geographic latitude coordinate
+    //   - longitude: number (optional) - Geographic longitude coordinate
+    //   - locationName: string (optional, 0..200 chars) - Human-readable location description
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if user owns the document path
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Validate required fields exist
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // Validate that document contains only allowed fields
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Validate that immutable fields are not changed during an update
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // Validate email format
+    function isValidEmail(email) {
+      return email is string &&
+        email.matches('^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$');
+    }
+
+    // Validate image URL format and length
+    function isValidUrl(url) {
+      return url is string &&
+        url.size() >= 1 &&
+        url.size() <= 1000 &&
+        (url.matches('^https?://.*') || url.matches('^gs://.*'));
+    }
+
+    // ===============================================================
+    // Domain Validators (Validator Function Pattern)
+    // ===============================================================
+
+    // User profile document validator
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['name', 'email', 'createdAt']) &&
+        hasRequiredFields(['name', 'email', 'createdAt']) &&
+        data.name is string &&
+        data.name.size() >= 1 &&
+        data.name.size() <= 100 &&
+        data.email is string &&
+        data.email.size() <= 150 &&
+        isValidEmail(data.email) &&
+        (data.createdAt is timestamp || (data.createdAt is number && data.createdAt > 0));
+    }
+
+    // Memory document validator
+    function isValidMemory(data) {
+      return hasOnlyAllowedFields([
+          'memoryId', 'userId', 'title', 'category',
+          'description', 'imageUrl', 'ticketStyle', 'createdAt',
+          'latitude', 'longitude', 'locationName'
+        ]) &&
+        hasRequiredFields([
+          'memoryId', 'userId', 'title', 'category',
+          'description', 'imageUrl', 'ticketStyle', 'createdAt'
+        ]) &&
+        data.memoryId is string &&
+        data.memoryId.size() >= 1 &&
+        data.memoryId.size() <= 128 &&
+        data.userId is string &&
+        data.userId.size() >= 1 &&
+        data.userId.size() <= 128 &&
+        data.title is string &&
+        data.title.size() >= 1 &&
+        data.title.size() <= 100 &&
+        data.category is string &&
+        data.category.size() >= 1 &&
+        data.category.size() <= 50 &&
+        data.description is string &&
+        data.description.size() <= 2000 &&
+        isValidUrl(data.imageUrl) &&
+        data.ticketStyle is string &&
+        data.ticketStyle.size() >= 1 &&
+        data.ticketStyle.size() <= 50 &&
+        ((data.createdAt is number && data.createdAt > 0) || data.createdAt is timestamp) &&
+        (!('latitude' in data) || data.latitude is number) &&
+        (!('longitude' in data) || data.longitude is number) &&
+        (!('locationName' in data) || (data.locationName is string && data.locationName.size() <= 200));
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    // ---------------------------------------------------------------
+    // User Profiles Collection
+    // Path: /users/{userId}
+    // ---------------------------------------------------------------
+    match /users/{userId} {
+      // Strict ownership for read to prevent PII exposure (email)
+      allow read: if isOwner(userId);
+
+      // Create allowed only for user's own document with valid schema
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+
+      // Update allowed only for user's own document, valid schema, immutable createdAt
+      allow update: if isOwner(userId)
+                    && isValidUser(request.resource.data)
+                    && areImmutableFieldsUnchanged(['createdAt']);
+
+      // Delete allowed only by profile owner
+      allow delete: if isOwner(userId);
+    }
+
+    // ---------------------------------------------------------------
+    // Memories Collection
+    // Path: /memories/{memoryId}
+    // ---------------------------------------------------------------
+    match /memories/{memoryId} {
+      // Allow reading individual memories or running whereEqualTo('userId', auth.uid) queries
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+
+      // Allow creating a memory ticket matching the authenticated user and document ID
+      allow create: if isAuthenticated()
+                    && request.resource.data.userId == request.auth.uid
+                    && request.resource.data.memoryId == memoryId
+                    && isValidMemory(request.resource.data);
+
+      // Allow updating owned memory while preventing tampering with ownership or identifiers
+      allow update: if isAuthenticated()
+                    && resource.data.userId == request.auth.uid
+                    && isValidMemory(request.resource.data)
+                    && areImmutableFieldsUnchanged(['memoryId', 'userId', 'createdAt']);
+
+      // Allow deleting only by memory owner
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    // ---------------------------------------------------------------
+    // Default Deny
+    // ---------------------------------------------------------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
